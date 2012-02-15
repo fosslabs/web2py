@@ -479,7 +479,7 @@ class IS_IN_DB(Validator):
             if isinstance(self.multiple,(tuple,list)) and \
                     not self.multiple[0]<=len(values)<self.multiple[1]:
                 return (values, translate(self.error_message))
-            if not [x for x in values if not x in self.theset]:
+            if not [x for x in values if not str(x) in self.theset]:
                 return (values, None)
         elif self.theset:
             if str(value) in self.theset:
@@ -539,15 +539,16 @@ class IS_NOT_IN_DB(Validator):
         if value in self.allowed_override:
             return (value, None)
         (tablename, fieldname) = str(self.field).split('.')
-        field = self.dbset.db[tablename][fieldname]
+        table = self.dbset.db[tablename]
+        field = table[fieldname]        
         rows = self.dbset(field == value, ignore_common_filters = self.ignore_common_filters).select(limitby=(0, 1))
         if len(rows) > 0:
             if isinstance(self.record_id, dict):
                 for f in self.record_id:
                     if str(getattr(rows[0], f)) != str(self.record_id[f]):
                         return (value, translate(self.error_message))
-            elif str(rows[0]._id) != str(self.record_id):
-                return (value, translate(self.error_message))
+            elif str(rows[0][table._id.name]) != str(self.record_id):
+                    return (value, translate(self.error_message))
         return (value, None)
 
 

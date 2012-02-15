@@ -872,6 +872,7 @@ class Auth(object):
         request = current.request
         session = current.session
         auth = session.auth
+        self.user_groups = auth and auth.user_groups or {}
         if auth and auth.last_visit and auth.last_visit + \
                 datetime.timedelta(days=0, seconds=auth.expiration) > request.now:
             self.user = auth.user
@@ -1185,8 +1186,12 @@ class Auth(object):
             next = ''
         else:
             next = '?_next='+urllib.quote(URL(args=request.args,vars=request.vars))
+
+        li_next = '?_next='+urllib.quote(self.settings.login_next)
+        lo_next = '?_next='+urllib.quote(self.settings.logout_next)
+            
         if self.user_id:
-            logout=A(T('Logout'),_href=action+'/logout'+next)
+            logout=A(T('Logout'),_href=action+'/logout'+lo_next)
             profile=A(T('Profile'),_href=action+'/profile'+next)
             password=A(T('Password'),_href=action+'/change_password'+next)
             bar = SPAN(prefix,self.user.first_name,s1, logout,s3,_class='auth_navbar')
@@ -1197,7 +1202,7 @@ class Auth(object):
                 bar.insert(-1, s2)
                 bar.insert(-1, password)
         else:
-            login=A(T('Login'),_href=action+'/login'+next)
+            login=A(T('Login'),_href=action+'/login'+li_next)
             register=A(T('Register'),_href=action+'/register'+next)
             retrieve_username=A(T('forgot username?'),
                             _href=action+'/retrieve_username'+next)
@@ -1319,7 +1324,7 @@ class Auth(object):
                 Field('role', length=512, default='',
                         label=self.messages.label_role),
                 Field('description', 'text',
-                        label=self.messages.label_description),
+                        label=self.messages.label_description),                
                 *settings.extra_fields.get(settings.table_group_name,[]),
                 **dict(
                     migrate=self.__get_migrate(
@@ -1469,7 +1474,7 @@ class Auth(object):
                 checks.append(fieldname)
                 user = user or table_user(**{fieldname:keys[fieldname]})
         # if we think we found the user but registration_id does not match, make new user
-        if user and user.registration_id and user.registration_id!=keys.get('registration_id',None):
+        if 'registration_id' in checks and user and user.registration_id and user.registration_id!=keys.get('registration_id',None):
             user = None # THINK MORE ABOUT THIS? DO WE TRUST OPENID PROVIDER?
         keys['registration_key']=''
         if user:
@@ -1517,6 +1522,7 @@ class Auth(object):
                                        expiration=self.settings.expiration,
                                        hmac_key = web2py_uuid())
                 self.user = user
+                self.update_groups()
                 return user
         else:
             # user not in database try other login methods
@@ -1807,6 +1813,8 @@ class Auth(object):
             self.log_event(log, user)
             session.flash = self.messages.logged_in
 
+        self.update_groups()
+            
         # how to continue
         if self.settings.login_form == self:
             if accepted_form:
@@ -1951,7 +1959,8 @@ class Auth(object):
                 session.auth = Storage(user=user, last_visit=request.now,
                                        expiration=self.settings.expiration,
                                        hmac_key = web2py_uuid())
-                self.user = user
+                self.user = user              
+                self.update_groups()
                 session.flash = self.messages.logged_in
             self.log_event(log, form.vars)
             callback(onaccept,form)
@@ -2485,6 +2494,17 @@ class Auth(object):
             return SQLFORM.factory(Field('user_id', 'integer'))
         return self.user
 
+    def update_groups(self):
+        if not self.user:
+            return
+        user_groups = self.user_groups = current.session.auth.user_groups = {}
+        memberships = self.db(self.settings.table_membership.user_id
+                              == self.user.id).select()
+        for membership in memberships:
+            group = self.settings.table_group(membership.group_id)
+            if group:
+                user_groups[membership.group_id] = group.role
+
     def groups(self):
         """
         displays the groups and their roles for the logged in user
@@ -2607,6 +2627,7 @@ class Auth(object):
         self.db(self.settings.table_group.id == group_id).delete()
         self.db(self.settings.table_membership.group_id == group_id).delete()
         self.db(self.settings.table_permission.group_id == group_id).delete()
+        self.update_groups()
         self.log_event(self.messages.del_group_log,dict(group_id=group_id))
 
     def id_group(self, role):
@@ -2669,6 +2690,7 @@ class Auth(object):
             return record.id
         else:
             id = membership.insert(group_id=group_id, user_id=user_id)
+        self.update_groups()
         self.log_event(self.messages.add_membership_log,
                        dict(user_id=user_id, group_id=group_id))
         return id
@@ -2685,9 +2707,11 @@ class Auth(object):
         membership = self.settings.table_membership
         self.log_event(self.messages.del_membership_log,
                        dict(user_id=user_id,group_id=group_id))
-        return self.db(membership.user_id
-                       == user_id)(membership.group_id
-                                   == group_id).delete()
+        ret = self.db(membership.user_id
+                      == user_id)(membership.group_id
+                                  == group_id).delete()
+        self.update_groups()
+        return ret
 
     def has_permission(
         self,
@@ -3177,8 +3201,7 @@ class Crud(object):
         method: Crud.delete(table, record_id, [next=DEFAULT
             [, message=DEFAULT]])
         """
-        if not (isinstance(table, self.db.Table) or table in self.db.tables) \
-                or not str(record_id).isdigit():
+        if not (isinstance(table, self.db.Table) or table in self.db.tables):
             raise HTTP(404)
         if not isinstance(table, self.db.Table):
             table = self.db[table]

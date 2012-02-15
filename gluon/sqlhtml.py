@@ -17,7 +17,7 @@ Holds:
 from http import HTTP
 from html import XML, SPAN, TAG, A, DIV, CAT, UL, LI, TEXTAREA, BR, IMG, SCRIPT
 from html import FORM, INPUT, LABEL, OPTION, SELECT, MENU
-from html import TABLE, THEAD, TBODY, TR, TD, TH
+from html import TABLE, THEAD, TBODY, TR, TD, TH, STYLE
 from html import URL, truncate_string
 from dal import DAL, Table, Row, CALLABLETYPES, smart_query
 from storage import Storage
@@ -754,10 +754,8 @@ class SQLFORM(FORM):
 
         self.record_id = record_id
         if keyed:
-            if record:
-                self.record_id = dict([(k,record[k]) for k in table._primarykey])
-            else:
-                self.record_id = dict([(k,None) for k in table._primarykey])
+            self.record_id = dict([(k,record and str(record[k]) or None) \
+                                       for k in table._primarykey])
         self.field_parent = {}
         xfields = []
         self.fields = fields
@@ -768,6 +766,9 @@ class SQLFORM(FORM):
         self.custom.comment = Storage()
         self.custom.widget = Storage()
         self.custom.linkto = Storage()
+
+        # default id field name
+        self.id_field_name = table._id.name
 
         sep = separator or ''
 
@@ -800,6 +801,10 @@ class SQLFORM(FORM):
                 self.custom.dspval.id = nbsp
                 self.custom.inpval.id = ''
                 widget = ''
+
+                # store the id field name (for legacy databases)
+                self.id_field_name = field.name
+
                 if record:
                     if showid and field.name in record and field.readable:
                         v = record[field.name]
@@ -895,7 +900,7 @@ class SQLFORM(FORM):
                     rfld = table._db[rtable][rfield]
                     query = urllib.quote('%s.%s==%s' % (db,rfld,record[rfld.type[10:].split('.')[1]]))
                 else:
-                    query = urllib.quote('%s.%s==%s' % (db,table._db[rtable][rfield],record.id))
+                    query = urllib.quote('%s.%s==%s' % (db,table._db[rtable][rfield],record[self.id_field_name]))
                 lname = olname = '%s.%s' % (rtable, rfield)
                 if ofields and not olname in ofields:
                     continue
@@ -1037,9 +1042,10 @@ class SQLFORM(FORM):
                 formname_id = '.'.join(str(self.record[k])
                                        for k in self.table._primarykey
                                        if hasattr(self.record,k))
-                record_id = dict((k, request_vars[k]) for k in self.table._primarykey)
+                record_id = dict((k, request_vars.get(k,None)) \
+                                     for k in self.table._primarykey)
             else:
-                (formname_id, record_id) = (self.record.id,
+                (formname_id, record_id) = (self.record[self.id_field_name],
                                             request_vars.get('id', None))
             keepvalues = True
         else:
@@ -1140,7 +1146,7 @@ class SQLFORM(FORM):
                 '%s != %s' % (record_id, self.record_id)
 
         if record_id and dbio and not keyed:
-            self.vars.id = self.record.id
+            self.vars.id = self.record[self.id_field_name]
 
         if self.deleted and self.custom.deletable:
             if dbio:
@@ -1149,7 +1155,7 @@ class SQLFORM(FORM):
                                  [self.table[k] == record_id[k] \
                                       for k in self.table._primarykey])
                 else:
-                    qry = self.table._id == self.record.id
+                    qry = self.table._id == self.record[self.id_field_name]
                 self.table._db(qry).delete()
             self.errors.clear()
             for component in self.elements('input, select, textarea'):
@@ -1260,9 +1266,9 @@ class SQLFORM(FORM):
                         ret = False
             else:
                 if record_id:
-                    self.vars.id = self.record.id
+                    self.vars.id = self.record[self.id_field_name]
                     if fields:
-                        self.table._db(self.table._id == self.record.id).update(**fields)
+                        self.table._db(self.table._id == self.record[self.id_field_name]).update(**fields)
                 else:
                     self.vars.id = self.table.insert(**fields)
         self.accepted = ret
@@ -1291,6 +1297,11 @@ class SQLFORM(FORM):
 
     @staticmethod
     def build_query(fields,keywords):
+        from gluon import current
+        request = current.request
+        if isinstance(keywords,(tuple,list)):
+           keywords = keywords[0]
+           request.vars.keywords = keywords
         key = keywords.strip()
         if key and not ' ' in key and not '"' in key and not "'" in key:
             SEARCHABLE_TYPES = ('string','text','list:string')
@@ -1346,12 +1357,12 @@ class SQLFORM(FORM):
                                 _class='w2p_query_row hidden'))
         criteria.insert(0,SELECT(
                 _id="w2p_query_fields",
-                _onchange="jQuery('.w2p_query_row').hide();jQuery('#w2p_field_'+jQuery(this).val().replace('.','-')).show();",
+                _onchange="jQuery('.w2p_query_row').hide();jQuery('#w2p_field_'+jQuery('#w2p_query_fields').val().replace('.','-')).show();",
                 *[OPTION(label, _value=fname) for fname,label in selectfields]))
         fadd = SCRIPT("""
         jQuery('#w2p_query_panel input,#w2p_query_panel select').css(
                'width','auto').css('float','left');
-        jQuery(function(){web2py_ajax_fields();});
+        jQuery(function(){web2py_ajax_fields('#w2p_query_panel');});
         function w2p_build_query(aggregator,a){
           var b=a.replace('.','-');
           var option = jQuery('#w2p_field_'+b+' select').val();
@@ -1360,14 +1371,13 @@ class SQLFORM(FORM):
           var k=jQuery('#web2py_keywords');
           var v=k.val();
           if(aggregator=='new') k.val(s); else k.val((v?(v+' '+ aggregator +' '):'')+s);
-          jQuery('#w2p_query_fields').val('').change();
-          jQuery('#w2p_query_panel').slideUp();
-        }
+          jQuery('#w2p_query_panel').slideUp();          
+        }      
         """)
         return CAT(
             INPUT(
                 _value=T("Query"),_type="button",_id="w2p_query_trigger",
-                _onclick="jQuery('#w2p_query_fields').val('');jQuery('#w2p_query_panel').slideToggle();"),
+                _onclick="jQuery('#w2p_query_fields').change();jQuery('#w2p_query_panel').slideToggle();"),
             DIV(_id="w2p_query_panel",
                 _style='position:absolute;z-index:1000',
                 _class='hidden',
@@ -1596,7 +1606,7 @@ class SQLFORM(FORM):
             table = db[request.args[-2]]
             if ondelete:
                 ondelete(table,request.args[-1])
-            ret = db(table.id==request.args[-1]).delete()
+            ret = db(table[table._id.name]==request.args[-1]).delete()
             return ret
         elif csv and len(request.args)>0 and request.args[-1]=='csv':
             if request.vars.keywords:
@@ -1642,12 +1652,13 @@ class SQLFORM(FORM):
             console.append(form)
             keywords = request.vars.get('keywords','')
             try:
-                subquery = SQLFORM.build_query(sfields, keywords)
+                if callable(searchable):
+                    subquery = searchable(sfields, keywords)
+                else:
+                    subquery = SQLFORM.build_query(sfields, keywords)
             except RuntimeError:
                 subquery = None
                 error = T('Invalid query')
-        elif callable(searchable):
-            subquery = searchable(keywords,fields)
         else:
             subquery = None
         if subquery:
@@ -1772,7 +1783,13 @@ class SQLFORM(FORM):
                     classtr = 'odd'
                 numrec+=1
                 id = row[field_id]
-                tr = TR(_class=classtr)
+                if id:
+                    rid = id
+                    if callable(rid): ### can this ever be callable?
+                        rid = rid(row)
+                    tr = TR(_id=rid, _class='%s %s' % (classtr, 'with_id'))
+                else:
+                    tr = TR(_class=classtr)
                 if selectable:
                     tr.append(INPUT(_type="checkbox",_name="records",_value=id,
                                     value=request.vars.records))
@@ -1922,7 +1939,9 @@ class SQLFORM(FORM):
                     previous_tablename,previous_fieldname,previous_id = \
                         tablename,fieldname,id
                     try:
-                        name = db[referee]._format % record
+                        format = db[referee]._format 
+                        if callable(format): name = format(record)
+                        else: name = format % record
                     except TypeError:
                         name = id
                     breadcrumbs += [A(T(db[referee]._plural),
@@ -1957,7 +1976,7 @@ class SQLFORM(FORM):
                 else:
                     del kwargs[key]
         for tablename,fieldname in table._referenced_by:
-            id_field_name = db[tablename]._id.name
+            id_field_name = table._id.name
             if linked_tables is None or tablename in linked_tables:
                 args0 = tablename+'.'+fieldname
                 links.append(
@@ -2125,7 +2144,7 @@ class SQLTABLE(TABLE):
                 _class = 'odd'
 
             if not selectid is None: #new implement
-                if record.id==selectid:
+                if record[self.id_field_name]==selectid:
                     _class += ' rowselected'
 
             for colname in columns:
